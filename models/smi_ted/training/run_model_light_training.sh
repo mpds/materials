@@ -3,7 +3,7 @@ torchrun \
     --standalone \
     --nnodes=1 \
     --nproc_per_node=1 \
-    train_model_ED.py \
+    train_model_D.py \
         --device cuda \
         --n_batch 288 \
         --n_layer 12 \
@@ -24,7 +24,7 @@ torchrun \
         --grad_acc 1 \
         --train_load 'pubchem' \
         --smi_ted_version 'v1' \
-        --data_root './pubchem/pubchem_rd-canonical_smiles.smi' \
+        --data_root 'pubchem/pubchem_rd-canonical_smiles.smi' \
         --save_checkpoint_path './light_checkpoints' \
         --load_checkpoint_path '' \
         --rotate \
