@@ -469,7 +469,6 @@ class TrainerEncoderDecoder(Trainer):
 
 
 class TrainerDirectDecoder(Trainer):
-
     def __init__(
         self,
         model: torch.nn.Module,
@@ -479,6 +478,7 @@ class TrainerDirectDecoder(Trainer):
         save_checkpoint_path: str,
         load_checkpoint_path: str,
         config,
+        text_encoder=None,
     ) -> None:
         super().__init__(
             model,
@@ -491,6 +491,11 @@ class TrainerDirectDecoder(Trainer):
         )
         self.criterionC = nn.CrossEntropyLoss(ignore_index=-100)
         self.criterionR = nn.MSELoss()
+        self.text_encoder = text_encoder
+        self.paired_mode = (
+            hasattr(train_data.dataset, "paired_mode")
+            and train_data.dataset.paired_mode
+        )
 
     def custom(self, module):
         def custom_forward(*inputs):
@@ -499,16 +504,28 @@ class TrainerDirectDecoder(Trainer):
 
         return custom_forward
 
-    def _run_batch(self, bucket_idx_masked, bucket_targets, bucket_idx_not_masked):
+    def _run_batch(
+        self,
+        bucket_idx_masked,
+        bucket_targets,
+        bucket_idx_not_masked,
+        bucket_output_ids=None,
+    ):
         padding_idx = 2
-        error = torch.zeros(1).to("cuda")  # .to(self.local_rank)
+        error = torch.zeros(1).to("cuda")
         error_tmp = 0.0
         self.optimizer.zero_grad(set_to_none=True)
 
         for chunk in range(len(bucket_idx_masked)):
-            idx_masked = bucket_idx_masked[chunk].to("cuda")  # .to(self.local_rank)
-            targets = bucket_targets[chunk].to("cuda")  # .to(self.local_rank)
-            idx_not_masked = bucket_idx_not_masked[chunk]
+            idx_masked = bucket_idx_masked[chunk].to("cuda")
+            targets = bucket_targets[chunk].to("cuda")
+
+            # Use output SMILES if in paired mode, otherwise use input SMILES
+            if self.paired_mode and bucket_output_ids is not None:
+                idx_not_masked = bucket_output_ids[chunk]
+            else:
+                idx_not_masked = bucket_idx_not_masked[chunk]
+
             idx_not_masked = list(
                 map(
                     lambda x: F.pad(
@@ -517,29 +534,23 @@ class TrainerDirectDecoder(Trainer):
                     idx_not_masked,
                 )
             )
-            idx_not_masked = torch.cat(idx_not_masked, dim=0).to(
-                "cuda"
-            )  # .to(self.local_rank)
+            idx_not_masked = torch.cat(idx_not_masked, dim=0).to("cuda")
             mask = idx_masked != padding_idx
-            mask = mask  # .to("cuda")
 
             # encoder forward
-            self.model  # .to("cuda")
-            x = self.model.encoder.tok_emb(idx_masked)  # .to("cuda"))
+            x = self.model.encoder.tok_emb(idx_masked)
             x = self.model.encoder.drop(x)
             x = checkpoint.checkpoint(
                 self.custom(self.model.encoder.blocks),
-                x,  # .to("cuda"),
+                x,
                 LengthMask(
                     mask.sum(-1),
                     max_len=idx_masked.shape[1],
-                ),  # device=x.device),
+                ),
             )
 
             # mean pooling
-            input_masked_expanded = (
-                mask.unsqueeze(-1).expand(x.size()).float()  # .to(x.device)
-            )
+            input_masked_expanded = mask.unsqueeze(-1).expand(x.size()).float()
             sum_embeddings = torch.sum(x * input_masked_expanded, 1)
             sum_mask = torch.clamp(input_masked_expanded.sum(1), min=1e-9)
             true_set = sum_embeddings / sum_mask
@@ -564,6 +575,19 @@ class TrainerDirectDecoder(Trainer):
             pred_ids = pred_ids.view(-1, pred_ids.size(-1))
             true_ids = idx_not_masked.view(-1)
 
+            # # Before computing error_ids
+            # if random.random() < 0.1:  # 10% chance to print
+            #     print("\n=== Target Verification ===")
+            #     print("Input Tokens:", idx_masked[0].tolist()[:10])
+            #     print("Target Tokens:", true_ids[:10].cpu().tolist())
+            #     print(
+            #         "Decoded Input:", self.text_encoder.decode(idx_masked[0].tolist())
+            #     )
+            #     print(
+            #         "Decoded Target:",
+            #         self.text_encoder.decode(true_ids[:50].cpu().tolist()),
+            #     )
+
             error_ids = self.criterionC(pred_ids, true_ids) / len(bucket_idx_masked)
             error_set = self.criterionR(pred_set, true_set) / len(bucket_idx_masked)
             error_tmp = error_ids + error_set
@@ -579,6 +603,59 @@ class TrainerDirectDecoder(Trainer):
         error.backward()
         self.optimizer.step()
 
-        # if self.local_rank == 0:
         print(f"Loss: {error.item()}")
         return error.item()
+
+    def _run_epoch(self, epoch):
+        print(
+            f"Epoch {epoch} | Batchsize: {self.config.n_batch} | Steps: {len(self.train_data)} | Last batch: {self.last_batch_idx}"
+        )
+        loss_list = pd.Series()
+
+        for idx, data in enumerate(tqdm(self.train_data)):
+            if idx <= self.last_batch_idx:
+                continue
+
+            # Handle both paired and non-paired data
+            if self.paired_mode:
+                bucket_idx_masked = data[0]
+                bucket_targets = data[1]
+                bucket_idx_not_masked = data[2]
+                bucket_output_ids = data[4]  # Output SMILES IDs
+                with torch.cuda.device(0):
+                    loss = self._run_batch(
+                        bucket_idx_masked,
+                        bucket_targets,
+                        bucket_idx_not_masked,
+                        bucket_output_ids,
+                    )
+            else:
+                bucket_idx_masked = data[0]
+                bucket_targets = data[1]
+                bucket_idx_not_masked = data[2]
+                with torch.cuda.device(0):
+                    loss = self._run_batch(
+                        bucket_idx_masked, bucket_targets, bucket_idx_not_masked
+                    )
+
+            torch.cuda.empty_cache()
+            loss_list = pd.concat([loss_list, pd.Series([loss])], axis=0)
+
+            if idx % self.save_every == 0 and idx != 0:
+                self._save_checkpoint(epoch, self.config, idx)
+                loss_list.to_csv(
+                    os.path.join(
+                        self.config.save_checkpoint_path,
+                        f"training_loss_{idx}_epoch{epoch}.csv",
+                    ),
+                    index=False,
+                )
+                loss_list = pd.Series()
+
+        self.last_batch_idx = -1
+        loss_list.to_csv(
+            os.path.join(
+                self.config.save_checkpoint_path, f"training_loss_epoch{epoch}.csv"
+            ),
+            index=False,
+        )

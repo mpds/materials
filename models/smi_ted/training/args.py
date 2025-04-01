@@ -312,6 +312,13 @@ def get_parser(parser=None):
         required=False,
         default="/dccstor/medscan7/smallmolecule/runs/ba-predictor/small-data/affinity",
     )
+    parser.add_argument(
+        "--output_data_root",
+        type=str,
+        required=False,
+        default="",
+        help="Path to output SMILES dataset for paired training",
+    )
     # parser.add_argument("--use_bn", type=int, default=0)
     parser.add_argument("--use_linear", type=int, default=0)
 

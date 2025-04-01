@@ -14,11 +14,14 @@ from pubchem_encoder import Encoder
 
 
 class MoleculeModule:
-    def __init__(self, max_len, dataset, data_path):
+    def __init__(self, max_len, dataset, data_path, output_data_path=None):
         super().__init__()
         self.dataset = dataset
         self.data_path = data_path
+        self.output_data_path = output_data_path
         self.text_encoder = Encoder(max_len)
+        self.paired_mode = output_data_path is not None and output_data_path != ""
+        self.output_dataset = None  # Initialize this field
 
     def prepare_data(self):
         pass
@@ -56,11 +59,6 @@ class MoleculeModule:
                 trust_remote_code=True,
             )
 
-        elif "custom" in self.dataset:
-            df = pd.read_csv(self.data_path)
-            df = {"smiles_1": df["smiles_1"].tolist()}
-            dataset_dict = Dataset.from_dict(df)
-
         elif "pubchem" in self.dataset:
             dataset_dict = load_dataset(
                 pubchem_script,
@@ -69,35 +67,94 @@ class MoleculeModule:
                 split="train",
                 trust_remote_code=True,
             )
-        elif "both" in self.dataset or "Both" in self.dataset or "BOTH" in self.dataset:
-            dataset_dict_pubchem = load_dataset(
-                pubchem_script,
-                data_files=pubchem_path,
-                cache_dir=os.path.join("/tmp", getpass.getuser(), "pubchem"),
-                split="train",
-                trust_remote_code=True,
-            )
-            zinc_files = [f for f in glob.glob(os.path.join(zinc_path, "*.smi"))]
-            for zfile in zinc_files:
-                print(zfile)
-            self.dataset = {"train": zinc_files}
-            dataset_dict_zinc = load_dataset(
-                "./zinc_script.py",
-                data_files=self.dataset,
-                cache_dir=os.path.join("/tmp", getpass.getuser(), "zinc"),
-                split="train",
-                trust_remote_code=True,
-            )
-            dataset_dict = concatenate_datasets(
-                [dataset_dict_zinc, dataset_dict_pubchem]
-            )
+
+            # Load output dataset if in paired mode
+            if self.paired_mode:
+                output_path = {"train": self.output_data_path}
+                if "canonical" in output_path["train"].lower():
+                    output_script = "./pubchem_canon_script.py"
+                else:
+                    output_script = "./pubchem_script.py"
+
+                print(f"Loading output dataset from {self.output_data_path}")
+                try:
+                    self.output_dataset = load_dataset(
+                        output_script,
+                        data_files=output_path,
+                        cache_dir=os.path.join(
+                            "/tmp", getpass.getuser(), "pubchem_output"
+                        ),
+                        split="train",
+                        trust_remote_code=True,
+                    )
+                    print(
+                        f"Successfully loaded output dataset with {len(self.output_dataset)} samples"
+                    )
+
+                    # Ensure datasets have the same size for paired mode
+                    if len(self.output_dataset) != len(dataset_dict):
+                        print(
+                            f"Warning: Input dataset ({len(dataset_dict)} samples) and "
+                            f"output dataset ({len(self.output_dataset)} samples) have different sizes"
+                        )
+                        # Use the smaller size
+                        min_size = min(len(dataset_dict), len(self.output_dataset))
+                        dataset_dict = dataset_dict.select(range(min_size))
+                        self.output_dataset = self.output_dataset.select(
+                            range(min_size)
+                        )
+                        print(
+                            f"Adjusted both datasets to {min_size} samples for paired training"
+                        )
+
+                except Exception as e:
+                    print(f"Error loading output dataset: {e}")
+                    self.output_dataset = None
+                    self.paired_mode = False
+                    print("Falling back to non-paired mode")
+
+        # elif "both" in self.dataset or "Both" in self.dataset or "BOTH" in self.dataset:
+        #     dataset_dict_pubchem = load_dataset(
+        #         pubchem_script,
+        #         data_files=pubchem_path,
+        #         cache_dir=os.path.join("/tmp", getpass.getuser(), "pubchem"),
+        #         split="train",
+        #         trust_remote_code=True,
+        #     )
+        #     zinc_files = [f for f in glob.glob(os.path.join(zinc_path, "*.smi"))]
+        #     for zfile in zinc_files:
+        #         print(zfile)
+        #     self.dataset = {"train": zinc_files}
+        #     dataset_dict_zinc = load_dataset(
+        #         "./zinc_script.py",
+        #         data_files=self.dataset,
+        #         cache_dir=os.path.join("/tmp", getpass.getuser(), "zinc"),
+        #         split="train",
+        #         trust_remote_code=True,
+        #     )
+        #     dataset_dict = concatenate_datasets(
+        #         [dataset_dict_zinc, dataset_dict_pubchem]
+        #     )
         self.pubchem = dataset_dict
-        print(dataset_dict.cache_files)
+        # print(dataset_dict.cache_files)
         self.cache_files = []
 
         for cache in dataset_dict.cache_files:
             tmp = "/".join(cache["filename"].split("/")[:4])
             self.cache_files.append(tmp)
+
+        # # DEBUG: Print sample pairs after loading
+        # if self.paired_mode and hasattr(self, "output_dataset"):
+        #     print("\n=== Dataset Verification ===")
+        #     for i in range(min(3, len(self.pubchem))):  # Print first 3 pairs
+        #         print(f"Pair {i}:")
+        #         print(f"Input:  {self.pubchem[i]['text']}")
+        #         print(f"Output: {self.output_dataset[i]['text']}")
+        #     print("=" * 40 + "\n")
+
+    def get_output_dataset(self):
+        """Returns the output dataset if in paired mode, otherwise returns None"""
+        return self.output_dataset if self.paired_mode else None
 
 
 def get_optim_groups(module):
