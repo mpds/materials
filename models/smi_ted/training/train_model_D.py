@@ -82,7 +82,7 @@ def main(
         config,
     )
     trainer.train(total_epochs)
-    destroy_process_group()
+    # destroy_process_group()
 
 
 if __name__ == "__main__":
