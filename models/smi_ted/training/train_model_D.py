@@ -37,7 +37,6 @@ def load_train_objs(config):
         pin_memory=True,
         shuffle=False,
         collate_fn=train_loader.text_encoder.process,
-        # sampler=DistributedSampler(train_loader.pubchem),
         num_workers=config.n_workers,
     )
 
@@ -48,7 +47,20 @@ def load_train_objs(config):
         from smi_ted_large.load import Smi_ted
 
     model = Smi_ted(config, train_loader.get_vocab()).to("cuda")
-    model.apply(model._init_weights)
+
+    # Handle different initialization modes
+    if config.init_mode == "weights_only" and config.init_weights_from:
+        print(f"Loading only model weights from {config.init_weights_from}")
+        loc = "cuda" if torch.cuda.is_available() else "cpu"
+        weights = torch.load(config.init_weights_from, map_location=loc)
+        model.load_state_dict(weights["MODEL_STATE"])
+    elif config.init_mode == "full_checkpoint" and config.load_checkpoint_path:
+        print(f"Loading full checkpoint from {config.load_checkpoint_path}")
+        # Trainer handles this case
+        pass
+    else:  # scratch
+        print("Initializing model weights from scratch")
+        model.apply(model._init_weights)
 
     # load optimizer
     optim_groups = get_optim_groups(model)

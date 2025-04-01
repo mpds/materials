@@ -46,6 +46,12 @@ class Trainer:
         # self.model = DDP(self.model, device_ids=[self.local_rank])
 
     def _load_checkpoint(self, checkpoint_path):
+        if self.config.init_mode != "full_checkpoint":
+            print(
+                f"Skipping checkpoint loading because init_mode is {self.config.init_mode}"
+            )
+            return
+
         opt_dict = None
         # loc = f"cuda:{self.local_rank}"
         loc = "cuda" if torch.cuda.is_available() else "cpu"
