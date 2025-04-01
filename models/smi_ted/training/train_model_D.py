@@ -83,7 +83,21 @@ def load_train_objs(config):
         print(f"Loading only model weights from {config.init_weights_from}")
         loc = "cuda" if torch.cuda.is_available() else "cpu"
         weights = torch.load(config.init_weights_from, map_location=loc)
-        model.load_state_dict(weights["MODEL_STATE"])
+
+        if config.init_encoder_only:
+            print("Initializing ONLY encoder weights and reinitializing decoder")
+            encoder_state = {
+                k: v
+                for k, v in weights["MODEL_STATE"].items()
+                if k.startswith("encoder.")
+            }
+            model.load_state_dict(encoder_state, strict=False)
+
+            model.decoder.apply(model._init_weights)  # reinitialize decoder weights
+        else:
+            # Original full weights loading
+            model.load_state_dict(weights["MODEL_STATE"])
+
     elif config.init_mode == "full_checkpoint" and config.load_checkpoint_path:
         print(f"Loading full checkpoint from {config.load_checkpoint_path}")
         # Trainer handles this case
@@ -181,7 +195,21 @@ def main(
         print(f"Loading only model weights from {config.init_weights_from}")
         loc = "cuda" if torch.cuda.is_available() else "cpu"
         weights = torch.load(config.init_weights_from, map_location=loc)
-        model.load_state_dict(weights["MODEL_STATE"])
+
+        if config.init_encoder_only:
+            print("Initializing ONLY encoder weights and reinitializing decoder")
+            encoder_state = {
+                k: v
+                for k, v in weights["MODEL_STATE"].items()
+                if k.startswith("encoder.")
+            }
+            model.load_state_dict(encoder_state, strict=False)
+
+            model.decoder.apply(model._init_weights)  # reinitialize decoder weights
+        else:
+            # Original full weights loading
+            model.load_state_dict(weights["MODEL_STATE"])
+
     elif config.init_mode == "full_checkpoint" and config.load_checkpoint_path:
         print(f"Loading full checkpoint from {config.load_checkpoint_path}")
         # Trainer handles this case

@@ -328,17 +328,22 @@ def get_parser(parser=None):
     parser.add_argument("--batch_size", type=int, default=64)
     #
     parser.add_argument(
-        "--init-mode",
+        "--init_mode",
         type=str,
         choices=["scratch", "weights_only", "full_checkpoint"],
         default="scratch",
         help='How to initialize model: "scratch"=random init, "weights_only"=load only model weights, "full_checkpoint"=load complete training state',
     )
     parser.add_argument(
-        "--init-weights-from",
+        "--init_weights_from",
         type=str,
         default="",
         help='Path to weights file when init_mode is "weights_only"',
+    )
+    parser.add_argument(
+        "--init_encoder_only",
+        action="store_true",
+        help="Load ONLY encoder weights and reinitialize decoder",
     )
 
     return parser
