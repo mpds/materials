@@ -1,5 +1,7 @@
 # Model weights
 inference/smi_ted_light/smi-ted-Light_40.pt
+**/*.pt
+training/light_checkpoints/*
 
 # pyenv
 .python-version
